@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ULTRANOIR</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; background: #000; }
+  canvas { display: block; }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto+Condensed:wght@300;400;900&family=Jost:wght@300;400;500;600&family=Spectral:ital,wght@1,300&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<!-- UI Overlay -->
+<div style="position:fixed;inset:0;z-index:10;pointer-events:none;font-family:'Roboto Condensed',sans-serif;color:#fff;">
+
+  <!-- Logo UN — top left -->
+  <img src="logo un.png" alt="UN" style="position:absolute;top:50px;left:50px;height:36px;pointer-events:auto;cursor:pointer;">
+
+  <!-- Burger menu — top right -->
+  <div style="position:absolute;top:63px;right:50px;pointer-events:auto;cursor:pointer;display:flex;flex-direction:column;align-items:flex-end;gap:6px;">
+    <span style="display:block;width:32px;height:2px;background:#fff;"></span>
+    <span style="display:block;width:20px;height:2px;background:#fff;"></span>
+  </div>
+
+  <!-- Client list — bottom left -->
+  <style>
+    .client-list a {
+      display: block;
+      color: #fff;
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+    .client-list a:hover {
+      color: #666;
+    }
+  </style>
+  <div class="client-list" style="position:absolute;bottom:-280px;left:50px;font-family:'Jost',sans-serif;font-size:22px;font-weight:600;line-height:1;pointer-events:auto;">
+    <a href="#">Dior</a>
+    <a href="#">Chanel</a>
+    <a href="#">Louis Vuitton</a>
+    <a href="#">Fred</a>
+    <a href="#">Zadig & Voltaire</a>
+    <a href="#">Max Mara</a>
+    <a href="#">CNES</a>
+    <a href="#">Air Liquide</a>
+    <a href="#">Comme des Garçons</a>
+    <a href="#">Charlemagne</a>
+    <a href="#">La Cité de la Langue Française</a>
+    <a href="#">Berluti</a>
+    <a href="#">Adidas</a>
+    <a href="#">Van Cleef and Arpels</a>
+    <a href="#">Hermès</a>
+    <a href="#">Saint Laurent</a>
+    <a href="#">Gucci</a>
+    <a href="#">Prada</a>
+    <a href="#">Bottega Veneta</a>
+    <a href="#">Loewe</a>
+    <a href="#">Celine</a>
+    <a href="#">Balenciaga</a>
+    <a href="#">Fendi</a>
+    <a href="#">Valentino</a>
+    <a href="#">Givenchy</a>
+    <a href="#">Miu Miu</a>
+  </div>
+
+  <!-- Scroll to explore — bottom center -->
+  <div style="position:absolute;bottom:32px;left:50%;transform:translateX(-50%);font-family:'Spectral',serif;font-size:14px;font-weight:300;font-style:italic;opacity:0.6;text-decoration:underline;text-underline-offset:4px;pointer-events:auto;cursor:pointer;">Scroll to explore</div>
+
+</div>
+
+
+<!-- Background shader -->
+<script id="bg-vertex" type="x-shader/x-vertex">
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+</script>
+<script id="bg-fragment" type="x-shader/x-fragment">
+precision highp float;
+varying vec2 vUv;
+uniform float uTime;
+uniform vec2 uMouse;
+uniform vec2 uTrailPos[20];
+uniform float uTrailStrength[20];
+
+vec3 mod289(vec3 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
+vec2 mod289(vec2 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
+vec3 permute(vec3 x) { return mod289(((x*34.0)+1.0)*x); }
+
+float snoise(vec2 v) {
+  const vec4 C = vec4(0.211324865405187, 0.366025403784439,
+                      -0.577350269189626, 0.024390243902439);
+  vec2 i  = floor(v + dot(v, C.yy));
+  vec2 x0 = v - i + dot(i, C.xx);
+  vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+  vec4 x12 = x0.xyxy + C.xxzz;
+  x12.xy -= i1;
+  i = mod289(i);
+  vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0)) + i.x + vec3(0.0, i1.x, 1.0));
+  vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
+  m = m*m; m = m*m;
+  vec3 x = 2.0 * fract(p * C.www) - 1.0;
+  vec3 h = abs(x) - 0.5;
+  vec3 ox = floor(x + 0.5);
+  vec3 a0 = x - ox;
+  m *= 1.79284291400159 - 0.85373472095314 * (a0*a0 + h*h);
+  vec3 g;
+  g.x = a0.x * x0.x + h.x * x0.y;
+  g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+  return 130.0 * dot(m, g);
+}
+
+float fbm(vec2 p) {
+  float val = 0.0;
+  float amp = 0.5;
+  float freq = 1.0;
+  for (int i = 0; i < 5; i++) {
+    val += amp * snoise(p * freq);
+    freq *= 2.0;
+    amp *= 0.5;
+  }
+  return val;
+}
+
+void main() {
+  vec2 uv = vUv;
+
+  // --- Water ripple: fading trail ---
+  for (int i = 0; i < 20; i++) {
+    vec2 toPoint = uv - uTrailPos[i];
+    float d = length(toPoint);
+    vec2 dir = d > 0.001 ? toPoint / d : vec2(0.0);
+    float inf = smoothstep(0.15, 0.0, d) * uTrailStrength[i];
+    uv += dir * inf * 0.025;
+  }
+
+  vec2 mouse = uMouse * 0.15;
+  vec2 warp = vec2(
+    fbm(uv * 3.0 + uTime * 0.05 + mouse),
+    fbm(uv * 3.0 + uTime * 0.05 + 10.0 + mouse * 0.8)
+  );
+  float n = fbm(uv * 4.0 + warp * 0.6);
+  float brightness = 0.035 + 0.05 * (n * 0.5 + 0.5);
+  float dist = length(vUv - 0.5);
+  brightness *= 1.0 - smoothstep(0.3, 0.85, dist);
+
+  gl_FragColor = vec4(vec3(brightness), 1.0);
+}
+</script>
+
+<!-- Glass cube shader -->
+<script id="glass-vertex" type="x-shader/x-vertex">
+varying vec3 vWorldNormal;
+varying vec3 vViewDir;
+varying vec4 vScreenPos;
+varying vec3 vWorldPos;
+varying vec3 vLocalPos;
+
+void main() {
+  vLocalPos = position;
+  vec4 worldPos = modelMatrix * vec4(position, 1.0);
+  vWorldPos = worldPos.xyz;
+  vWorldNormal = normalize((modelMatrix * vec4(normal, 0.0)).xyz);
+  vViewDir = normalize(cameraPosition - worldPos.xyz);
+
+  vec4 mvpPos = projectionMatrix * viewMatrix * worldPos;
+  vScreenPos = mvpPos;
+
+  gl_Position = mvpPos;
+}
+</script>
+<script id="glass-fragment" type="x-shader/x-fragment">
+precision highp float;
+
+varying vec3 vWorldNormal;
+varying vec3 vViewDir;
+varying vec4 vScreenPos;
+varying vec3 vWorldPos;
+varying vec3 vLocalPos;
+
+uniform sampler2D uBackBuffer;
+uniform vec2 uResolution;
+uniform float uTime;
+uniform samplerCube uEnvMap;
+uniform vec2 uMouse;
+
+void main() {
+  vec3 N = normalize(vWorldNormal);
+  vec3 V = normalize(vViewDir);
+
+  vec2 screenUV = (vScreenPos.xy / vScreenPos.w) * 0.5 + 0.5;
+
+  // Fresnel
+  float NdotV = max(dot(V, N), 0.0);
+  float F = pow(1.0 - NdotV, 5.0) * 0.6 + 0.02;
+
+  // --- Edge proximity (branchless, works on all faces uniformly) ---
+  vec3 ap = abs(vLocalPos) / 0.6;
+  float mx = max(ap.x, max(ap.y, ap.z));
+  float mn = min(ap.x, min(ap.y, ap.z));
+  float md = ap.x + ap.y + ap.z - mx - mn;
+  float edgeProx = max(md, mn);
+  float edgeWarp = pow(edgeProx, 2.5);
+
+  // --- Refraction ---
+  vec3 refracted = refract(-V, N, 1.0 / 1.5);
+  vec2 baseDistortion = refracted.xy * 0.15;
+  vec2 distortion = baseDistortion * (1.0 + edgeWarp * 1.8);
+
+  // Chromatic aberration
+  float spread = 0.002 + 0.006 * edgeWarp;
+  vec2 offR = distortion + normalize(distortion + 0.001) * spread;
+  vec2 offG = distortion;
+  vec2 offB = distortion - normalize(distortion + 0.001) * spread;
+
+  // Blur radius
+  float blurSize = 0.004 + 0.014 * edgeWarp;
+
+  // Poisson disc 37-tap blur
+  vec3 refractedColor = vec3(0.0);
+  float totalWeight = 0.0;
+  vec2 baseUV = screenUV + distortion;
+
+  vec2 poissonDisc[37];
+  poissonDisc[0] = vec2(0.0, 0.0);
+  poissonDisc[1] = vec2(0.2695, 0.1472);
+  poissonDisc[2] = vec2(-0.1534, 0.2910);
+  poissonDisc[3] = vec2(-0.3150, -0.0983);
+  poissonDisc[4] = vec2(0.0721, -0.3113);
+  poissonDisc[5] = vec2(0.4105, -0.1680);
+  poissonDisc[6] = vec2(-0.4520, 0.1890);
+  poissonDisc[7] = vec2(0.1440, 0.4660);
+  poissonDisc[8] = vec2(-0.2100, -0.4370);
+  poissonDisc[9] = vec2(0.4870, 0.2530);
+  poissonDisc[10] = vec2(-0.5140, -0.2450);
+  poissonDisc[11] = vec2(0.3470, 0.4510);
+  poissonDisc[12] = vec2(-0.0510, 0.5730);
+  poissonDisc[13] = vec2(-0.4270, -0.4490);
+  poissonDisc[14] = vec2(0.5680, -0.0230);
+  poissonDisc[15] = vec2(-0.5940, 0.0160);
+  poissonDisc[16] = vec2(0.0050, -0.5870);
+  poissonDisc[17] = vec2(0.3470, -0.4540);
+  poissonDisc[18] = vec2(-0.3060, 0.5380);
+  poissonDisc[19] = vec2(0.6170, 0.2710);
+  poissonDisc[20] = vec2(-0.6530, -0.1220);
+  poissonDisc[21] = vec2(0.5300, -0.3800);
+  poissonDisc[22] = vec2(-0.5430, 0.4110);
+  poissonDisc[23] = vec2(0.1820, -0.6700);
+  poissonDisc[24] = vec2(0.5430, 0.5010);
+  poissonDisc[25] = vec2(-0.2420, -0.6570);
+  poissonDisc[26] = vec2(-0.6880, 0.2990);
+  poissonDisc[27] = vec2(0.7150, -0.1630);
+  poissonDisc[28] = vec2(-0.1070, 0.7310);
+  poissonDisc[29] = vec2(-0.5370, -0.5620);
+  poissonDisc[30] = vec2(0.7300, 0.1170);
+  poissonDisc[31] = vec2(0.1300, 0.7510);
+  poissonDisc[32] = vec2(-0.7350, -0.2810);
+  poissonDisc[33] = vec2(0.4090, -0.6230);
+  poissonDisc[34] = vec2(-0.6420, 0.5200);
+  poissonDisc[35] = vec2(0.6700, -0.4640);
+  poissonDisc[36] = vec2(-0.4440, 0.6610);
+
+  for (int i = 0; i < 37; i++) {
+    vec2 offset = poissonDisc[i] * blurSize;
+    float d = length(poissonDisc[i]);
+    float w = exp(-d * d * 2.0);
+    refractedColor += texture2D(uBackBuffer, baseUV + offset).rgb * w;
+    totalWeight += w;
+  }
+  refractedColor /= totalWeight;
+
+  // Very subtle chromatic fringe at edges only
+  float rShift = texture2D(uBackBuffer, baseUV + normalize(distortion + 0.001) * spread).r;
+  float bShift = texture2D(uBackBuffer, baseUV - normalize(distortion + 0.001) * spread).b;
+  refractedColor.r = mix(refractedColor.r, rShift, 0.25 * edgeWarp);
+  refractedColor.b = mix(refractedColor.b, bShift, 0.25 * edgeWarp);
+
+  // --- Light & specular ---
+  vec3 lightDir = normalize(vec3(-1.0, 1.0, 1.0));
+  vec3 H = normalize(V + lightDir);
+  float spec = pow(max(dot(N, H), 0.0), 200.0) * 0.8;
+
+  vec3 lightDir2 = normalize(vec3(1.0, -0.5, 0.8));
+  vec3 H2 = normalize(V + lightDir2);
+  float spec2 = pow(max(dot(N, H2), 0.0), 150.0) * 0.3;
+
+  // --- Reflection: subtle env ---
+  vec3 reflected = reflect(-V, N);
+  vec3 reflectColor = textureCube(uEnvMap, reflected).rgb * 0.5;
+
+  // --- Edge highlight ---
+  float edge = pow(1.0 - NdotV, 3.0) * 0.2;
+
+  // --- Combine ---
+  vec3 color = mix(refractedColor, reflectColor, F * 0.3);
+  float specTotal = spec + spec2;
+  color += vec3(1.0) * specTotal;
+  color += vec3(0.7, 0.8, 1.0) * edge;
+
+  // Subtle glow on specular highlights (bloom-like, cube only)
+  float glow = pow(specTotal, 0.5) * 0.08;
+  color += vec3(0.8, 0.85, 1.0) * glow;
+
+  gl_FragColor = vec4(color, 1.0);
+}
+</script>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+
+// --- Setup ---
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+document.body.appendChild(renderer.domElement);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.z = 5;
+
+// --- Scenes: one for background, one for cube ---
+const bgScene = new THREE.Scene();
+const cubeScene = new THREE.Scene();
+
+// --- Mouse ---
+const mouse = { x: 0, y: 0, smoothX: 0, smoothY: 0 };
+window.addEventListener('mousemove', (e) => {
+  mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+});
+
+// --- Trail for water ripple ---
+const TRAIL_LENGTH = 20;
+const trailPositions = Array.from({ length: TRAIL_LENGTH }, () => new THREE.Vector2(0.5, 0.5));
+const trailStrengths = new Array(TRAIL_LENGTH).fill(0.0);
+let trailFrameCounter = 0;
+
+// --- Background plane ---
+const bgUniforms = {
+  uTime: { value: 0 },
+  uMouse: { value: new THREE.Vector2(0, 0) },
+  uTrailPos: { value: trailPositions },
+  uTrailStrength: { value: trailStrengths },
+};
+
+const bgMaterial = new THREE.ShaderMaterial({
+  vertexShader: document.getElementById('bg-vertex').textContent,
+  fragmentShader: document.getElementById('bg-fragment').textContent,
+  uniforms: bgUniforms,
+  depthWrite: false
+});
+
+const bgPlane = new THREE.Mesh(new THREE.PlaneGeometry(20, 20), bgMaterial);
+bgPlane.position.z = -6;
+bgScene.add(bgPlane);
+
+// --- ULTRANOIR text plane ---
+function createTextTexture() {
+  const canvas = document.createElement('canvas');
+  const ratio = window.innerWidth / window.innerHeight;
+  canvas.width = 2048;
+  canvas.height = Math.round(2048 / ratio);
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 290px "Roboto Condensed", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.letterSpacing = '-20px';
+  ctx.fillText('ULTRANOIR', canvas.width / 2, canvas.height / 2);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  return { texture, ratio: canvas.width / canvas.height };
+}
+
+const { texture: textTexture, ratio: textRatio } = createTextTexture();
+const textPlaneHeight = 6;
+const textPlane = new THREE.Mesh(
+  new THREE.PlaneGeometry(textPlaneHeight * textRatio, textPlaneHeight),
+  new THREE.MeshBasicMaterial({ map: textTexture, transparent: true })
+);
+textPlane.position.z = -1.5;
+bgScene.add(textPlane);
+
+// --- Client hover image plane (behind text, in front of bg) ---
+const clientImageUrls = {
+  'Dior': 'https://images.unsplash.com/photo-1558618666-fcd25c85f82e?w=1200&h=675&fit=crop',
+  'Chanel': 'https://images.unsplash.com/photo-1541643600914-78b084683601?w=1200&h=675&fit=crop',
+  'Louis Vuitton': 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=1200&h=675&fit=crop',
+  'Fred': 'https://images.unsplash.com/photo-1617038260897-41a1f14a8ca0?w=1200&h=675&fit=crop',
+  'Zadig & Voltaire': 'https://images.unsplash.com/photo-1618898909019-010e4e234c55?w=1200&h=675&fit=crop',
+  'Max Mara': 'https://images.unsplash.com/photo-1509631179647-0177331693ae?w=1200&h=675&fit=crop',
+  'CNES': 'https://images.unsplash.com/photo-1446776811953-b23d57bd21aa?w=1200&h=675&fit=crop',
+  'Air Liquide': 'https://images.unsplash.com/photo-1532187863486-abf9dbad1b69?w=1200&h=675&fit=crop',
+  'Comme des Garçons': 'https://images.unsplash.com/photo-1558171813-4c088753af8f?w=1200&h=675&fit=crop',
+  'Charlemagne': 'https://images.unsplash.com/photo-1582562124811-c09040d0a901?w=1200&h=675&fit=crop',
+  'La Cité de la Langue Française': 'https://images.unsplash.com/photo-1499750310107-5fef28a66643?w=1200&h=675&fit=crop',
+  'Berluti': 'https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=1200&h=675&fit=crop',
+  'Adidas': 'https://images.unsplash.com/photo-1556906781-9a412961c28c?w=1200&h=675&fit=crop',
+  'Van Cleef and Arpels': 'https://images.unsplash.com/photo-1515562141589-67f0d569b6f5?w=1200&h=675&fit=crop',
+  'Hermès': 'https://images.unsplash.com/photo-1594938298603-c8148c4dae35?w=1200&h=675&fit=crop',
+  'Saint Laurent': 'https://images.unsplash.com/photo-1490481651871-ab68de25d43d?w=1200&h=675&fit=crop',
+  'Gucci': 'https://images.unsplash.com/photo-1606107557195-0e29a4b5b4aa?w=1200&h=675&fit=crop',
+  'Prada': 'https://images.unsplash.com/photo-1548036328-c9fa89d128fa?w=1200&h=675&fit=crop',
+  'Bottega Veneta': 'https://images.unsplash.com/photo-1584917865442-de89df76afd3?w=1200&h=675&fit=crop',
+  'Loewe': 'https://images.unsplash.com/photo-1512436991641-6745cdb1723f?w=1200&h=675&fit=crop',
+  'Celine': 'https://images.unsplash.com/photo-1566150905458-1bf1fc113f0d?w=1200&h=675&fit=crop',
+  'Balenciaga': 'https://images.unsplash.com/photo-1595950653106-6c9ebd614d3a?w=1200&h=675&fit=crop',
+  'Fendi': 'https://images.unsplash.com/photo-1553062407-98eeb64c6a62?w=1200&h=675&fit=crop',
+  'Valentino': 'https://images.unsplash.com/photo-1445205170230-053b83016050?w=1200&h=675&fit=crop',
+  'Givenchy': 'https://images.unsplash.com/photo-1581338834647-b0fb40704e21?w=1200&h=675&fit=crop',
+  'Miu Miu': 'https://images.unsplash.com/photo-1543163521-1bf539c55dd2?w=1200&h=675&fit=crop',
+};
+
+// Preload textures
+const textureLoader = new THREE.TextureLoader();
+textureLoader.crossOrigin = 'anonymous';
+const clientTextures = {};
+Object.entries(clientImageUrls).forEach(([name, url]) => {
+  textureLoader.load(url, (tex) => { clientTextures[name] = tex; });
+});
+
+// Image plane — 16:9, 80% of visible width at z=-2.5
+const imgZ = -2.5;
+function getImgPlaneSize() {
+  const dist = camera.position.z - imgZ;
+  const vFov = camera.fov * Math.PI / 180;
+  const visH = 2 * Math.tan(vFov / 2) * dist;
+  const visW = visH * camera.aspect;
+  const w = visW * 0.8;
+  const h = w * (9 / 16);
+  return { w, h };
+}
+const imgSize = getImgPlaneSize();
+const clientImgMaterial = new THREE.MeshBasicMaterial({
+  transparent: true,
+  opacity: 0,
+  color: 0xffffff,
+  depthWrite: false,
+});
+const clientImgPlane = new THREE.Mesh(
+  new THREE.PlaneGeometry(imgSize.w, imgSize.h),
+  clientImgMaterial
+);
+clientImgPlane.position.z = imgZ;
+bgScene.add(clientImgPlane);
+
+// Hover state
+let clientImgTarget = 0; // target opacity
+const links = document.querySelectorAll('.client-list a');
+links.forEach(link => {
+  link.addEventListener('mouseenter', () => {
+    const name = link.textContent.trim();
+    const tex = clientTextures[name];
+    if (tex) {
+      clientImgMaterial.map = tex;
+      clientImgMaterial.needsUpdate = true;
+      clientImgTarget = 1;
+    }
+  });
+  link.addEventListener('mouseleave', () => {
+    clientImgTarget = 0;
+  });
+});
+
+// --- Section 2 text plane ---
+function createSection2Texture() {
+  const canvas = document.createElement('canvas');
+  const ratio = window.innerWidth / window.innerHeight;
+  canvas.width = 2048;
+  canvas.height = Math.round(2048 / ratio);
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '900 70px "Roboto Condensed", Arial, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.letterSpacing = '-4px';
+  const centerY = canvas.height / 2;
+  ctx.fillText('Solutions digitales, créatives,', canvas.width / 2, centerY - 80);
+  ctx.fillText('innovantes et uniques.', canvas.width / 2, centerY);
+  ctx.fillText('Since 2005', canvas.width / 2, centerY + 120);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  return { texture, ratio: canvas.width / canvas.height };
+}
+
+const { texture: section2Texture, ratio: section2Ratio } = createSection2Texture();
+const section2PlaneHeight = 6;
+const section2Plane = new THREE.Mesh(
+  new THREE.PlaneGeometry(section2PlaneHeight * section2Ratio, section2PlaneHeight),
+  new THREE.MeshBasicMaterial({ map: section2Texture, transparent: true })
+);
+section2Plane.position.z = -1.5;
+section2Plane.position.y = -8;
+bgScene.add(section2Plane);
+
+// --- Virtual scroll ---
+let scrollY = 0;
+let scrollTarget = 0;
+const scrollMax = 8;
+window.addEventListener('wheel', (e) => {
+  scrollTarget += e.deltaY * 0.005;
+  scrollTarget = Math.max(0, Math.min(scrollMax, scrollTarget));
+}, { passive: true });
+
+// --- Render target for background pass ---
+const rtWidth = Math.floor(window.innerWidth * Math.min(window.devicePixelRatio, 2));
+const rtHeight = Math.floor(window.innerHeight * Math.min(window.devicePixelRatio, 2));
+let backBuffer = new THREE.WebGLRenderTarget(rtWidth, rtHeight, {
+  minFilter: THREE.LinearFilter,
+  magFilter: THREE.LinearFilter,
+  format: THREE.RGBAFormat
+});
+
+// --- Environment cubemap for reflections ---
+const cubeRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
+  format: THREE.RGBAFormat,
+  generateMipmaps: true,
+  minFilter: THREE.LinearMipmapLinearFilter
+});
+const cubeCamera = new THREE.CubeCamera(0.1, 100, cubeRenderTarget);
+
+const envScene = new THREE.Scene();
+const envLights = [
+  { color: 0xffffff, pos: [5, 5, 5], size: 0.8 },
+  { color: 0xccddff, pos: [-5, 3, -3], size: 0.7 },
+  { color: 0xffeedd, pos: [0, -5, 5], size: 0.6 },
+  { color: 0xaaccff, pos: [3, -3, -5], size: 0.5 },
+  { color: 0xffffff, pos: [-4, -4, 4], size: 0.5 },
+  { color: 0x8899bb, pos: [0, 6, 0], size: 0.9 },
+  { color: 0xeeeeff, pos: [6, 0, 0], size: 0.6 },
+  { color: 0xddeeff, pos: [-6, 0, 0], size: 0.6 },
+  { color: 0xffffff, pos: [0, 0, 6], size: 1.0 },
+];
+envLights.forEach(({ color, pos, size }) => {
+  const m = new THREE.Mesh(
+    new THREE.SphereGeometry(size, 8, 8),
+    new THREE.MeshBasicMaterial({ color, toneMapped: false })
+  );
+  m.position.set(...pos);
+  envScene.add(m);
+});
+envScene.background = new THREE.Color(0x050508);
+cubeCamera.update(renderer, envScene);
+
+// --- Glass cube with custom shader ---
+const cubeGeo = new RoundedBoxGeometry(1.2, 1.2, 1.2, 2, 0.010);
+const glassUniforms = {
+  uBackBuffer: { value: backBuffer.texture },
+  uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+  uTime: { value: 0 },
+  uEnvMap: { value: cubeRenderTarget.texture },
+  uMouse: { value: new THREE.Vector2(0, 0) },
+};
+
+const glassMaterial = new THREE.ShaderMaterial({
+  vertexShader: document.getElementById('glass-vertex').textContent,
+  fragmentShader: document.getElementById('glass-fragment').textContent,
+  uniforms: glassUniforms,
+  transparent: false,
+  depthWrite: true,
+});
+
+const cube = new THREE.Mesh(cubeGeo, glassMaterial);
+cubeScene.add(cube);
+
+// No wireframe edges — beveled geometry handles edge highlights naturally
+
+
+// --- Resize ---
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+
+  const w = Math.floor(window.innerWidth * Math.min(window.devicePixelRatio, 2));
+  const h = Math.floor(window.innerHeight * Math.min(window.devicePixelRatio, 2));
+  backBuffer.setSize(w, h);
+  glassUniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
+
+  // Resize client image plane
+  const newImgSize = getImgPlaneSize();
+  clientImgPlane.geometry.dispose();
+  clientImgPlane.geometry = new THREE.PlaneGeometry(newImgSize.w, newImgSize.h);
+
+  const { texture, ratio } = createTextTexture();
+  textPlane.material.map = texture;
+  textPlane.material.needsUpdate = true;
+  textPlane.geometry.dispose();
+  const ph = 6;
+  textPlane.geometry = new THREE.PlaneGeometry(ph * ratio, ph);
+
+  const { texture: s2tex, ratio: s2r } = createSection2Texture();
+  section2Plane.material.map = s2tex;
+  section2Plane.material.needsUpdate = true;
+  section2Plane.geometry.dispose();
+  section2Plane.geometry = new THREE.PlaneGeometry(ph * s2r, ph);
+});
+
+// --- Animate ---
+const clock = new THREE.Clock();
+let lastTime = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  const dt = t - lastTime;
+  lastTime = t;
+
+  // Smooth mouse
+  mouse.smoothX += (mouse.x - mouse.smoothX) * 0.04;
+  mouse.smoothY += (mouse.y - mouse.smoothY) * 0.04;
+
+  // Smooth scroll
+  scrollY += (scrollTarget - scrollY) * 0.06;
+  textPlane.position.y = scrollY;
+  section2Plane.position.y = -8 + scrollY;
+
+  // Client image fade
+  clientImgMaterial.opacity += (clientImgTarget - clientImgMaterial.opacity) * 0.08;
+  clientImgPlane.position.y = scrollY; // follow scroll
+
+  // Background uniforms
+  bgUniforms.uTime.value = t;
+  bgUniforms.uMouse.value.set(mouse.smoothX, mouse.smoothY);
+  glassUniforms.uTime.value = t;
+  glassUniforms.uMouse.value.set(mouse.smoothX, mouse.smoothY);
+
+  // Cube slow rotation + mouse
+  cube.rotation.y = t * 0.15 + mouse.smoothX * 0.8;
+  cube.rotation.x = t * 0.1 + mouse.smoothY * 0.6;
+  cube.rotation.z = mouse.smoothX * 0.15;
+  cube.position.x = mouse.smoothX * 4.5;
+  cube.position.y = mouse.smoothY * 3.0;
+
+  // --- Trail for bg water ripple ---
+  const cubeWorldPos = new THREE.Vector3();
+  cube.getWorldPosition(cubeWorldPos);
+  const projected = cubeWorldPos.clone().project(camera);
+  const cubeUVx = projected.x * 0.5 + 0.5;
+  const cubeUVy = projected.y * 0.5 + 0.5;
+
+  trailFrameCounter++;
+  if (trailFrameCounter >= 3) {
+    trailFrameCounter = 0;
+    for (let i = TRAIL_LENGTH - 1; i > 0; i--) {
+      trailPositions[i].copy(trailPositions[i - 1]);
+      trailStrengths[i] = trailStrengths[i - 1];
+    }
+    trailPositions[0].set(cubeUVx, cubeUVy);
+    trailStrengths[0] = 1.0;
+  }
+  for (let i = 0; i < TRAIL_LENGTH; i++) {
+    trailStrengths[i] *= 0.96;
+  }
+
+  // --- Rendering ---
+  renderer.setRenderTarget(backBuffer);
+  renderer.render(bgScene, camera);
+
+  renderer.setRenderTarget(null);
+  renderer.render(bgScene, camera);
+
+  renderer.autoClear = false;
+  renderer.render(cubeScene, camera);
+  renderer.autoClear = true;
+}
+
+animate();
+</script>
+</body>
+</html>
