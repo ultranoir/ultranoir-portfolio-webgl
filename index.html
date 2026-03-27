@@ -5,15 +5,39 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ULTRANOIR</title>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { overflow: hidden; background: #000; }
-  canvas { display: block; }
+  * { margin: 0; padding: 0; box-sizing: border-box; cursor: none; }
+  body { overflow: hidden; background: #000; cursor: none; }
+  canvas { display: block; position: relative; z-index: 5; }
+  .cursor-dot {
+    position: fixed; top: 0; left: 0; z-index: 10000;
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #fff; pointer-events: none;
+    mix-blend-mode: difference;
+    transform: translate(-50%, -50%);
+    transition: width 0.3s, height 0.3s, opacity 0.3s;
+  }
+  .cursor-ring {
+    position: fixed; top: 0; left: 0; z-index: 9999;
+    width: 40px; height: 40px; border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.5);
+    pointer-events: none;
+    mix-blend-mode: difference;
+    transform: translate(-50%, -50%);
+    transition: width 0.3s, height 0.3s, border-color 0.3s, opacity 0.3s;
+  }
+  .cursor-dot.hover { width: 12px; height: 12px; }
+  .cursor-ring.hover { width: 60px; height: 60px; border-color: rgba(255,255,255,0.8); }
+  .cursor-dot.holding { width: 4px; height: 4px; opacity: 0.5; }
+  .cursor-ring.holding { width: 20px; height: 20px; border-color: rgba(255,255,255,0.2); }
 </style>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Roboto+Condensed:wght@300;400;900&family=Jost:wght@300;400;500;600&family=Spectral:ital,wght@1,300&display=swap" rel="stylesheet">
 </head>
+<div class="cursor-dot"></div>
+<div class="cursor-ring"></div>
 <body>
+
 
 <!-- UI Overlay -->
 <div style="position:fixed;inset:0;z-index:10;pointer-events:none;font-family:'Roboto Condensed',sans-serif;color:#fff;">
@@ -73,6 +97,54 @@
 
 </div>
 
+<style>
+  .ui-parallax {
+    transition: transform 0.1s ease-out;
+  }
+</style>
+
+
+<!-- Post-process inverse spherize shader -->
+<script id="post-vertex" type="x-shader/x-vertex">
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = vec4(position, 1.0);
+}
+</script>
+<script id="post-fragment" type="x-shader/x-fragment">
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D uScene;
+uniform float uStrength;
+uniform vec2 uCenter;
+
+void main() {
+  vec2 uv = vUv;
+  vec2 center = uCenter;
+  vec2 toCenter = uv - center;
+  float dist = length(toCenter);
+
+  // Soft spherical hole: center shrinks away, smooth bowl curve
+  float maxDist = 0.7;
+  float normDist = clamp(dist / maxDist, 0.0, 1.0);
+  // Quadratic: edges stay, center compresses — things recede smoothly
+  float expand = 1.0 + uStrength * (1.0 - normDist) * (1.0 - normDist);
+  vec2 distortedUV = center + toCenter * expand;
+
+  // Clamp to avoid sampling outside
+  distortedUV = clamp(distortedUV, 0.0, 1.0);
+
+  // Subtle chromatic aberration that increases with strength
+  float chromatic = uStrength * 0.003 * dist;
+  vec3 color;
+  color.r = texture2D(uScene, center + (distortedUV - center) * (1.0 + chromatic)).r;
+  color.g = texture2D(uScene, distortedUV).g;
+  color.b = texture2D(uScene, center + (distortedUV - center) * (1.0 - chromatic)).b;
+
+  gl_FragColor = vec4(color, 1.0);
+}
+</script>
 
 <!-- Background shader -->
 <script id="bg-vertex" type="x-shader/x-vertex">
@@ -89,6 +161,8 @@ uniform float uTime;
 uniform vec2 uMouse;
 uniform vec2 uTrailPos[20];
 uniform float uTrailStrength[20];
+uniform float uSpherize;
+uniform vec2 uCubeScreenPos;
 
 vec3 mod289(vec3 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
 vec2 mod289(vec2 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
@@ -122,11 +196,15 @@ float fbm(vec2 p) {
   float amp = 0.5;
   float freq = 1.0;
   for (int i = 0; i < 5; i++) {
-    val += amp * snoise(p * freq);
+    val += amp * abs(snoise(p * freq));
     freq *= 2.0;
     amp *= 0.5;
   }
   return val;
+}
+
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
 }
 
 void main() {
@@ -141,17 +219,38 @@ void main() {
     uv += dir * inf * 0.025;
   }
 
-  vec2 mouse = uMouse * 0.15;
-  vec2 warp = vec2(
-    fbm(uv * 3.0 + uTime * 0.05 + mouse),
-    fbm(uv * 3.0 + uTime * 0.05 + 10.0 + mouse * 0.8)
-  );
-  float n = fbm(uv * 4.0 + warp * 0.6);
-  float brightness = 0.035 + 0.05 * (n * 0.5 + 0.5);
-  float dist = length(vUv - 0.5);
-  brightness *= 1.0 - smoothstep(0.3, 0.85, dist);
+  // Spherize distortion on background UVs (center follows cube)
+  vec2 center = uCubeScreenPos;
+  vec2 delta = uv - center;
+  float dist2 = length(delta);
+  float warpAmount = uSpherize * 15.0;
+  uv = center + delta * (1.0 + warpAmount * dist2);
 
-  gl_FragColor = vec4(vec3(brightness), 1.0);
+  // Turbulence FBM (zoomed in)
+  vec2 zUv = uv * 0.4 + 0.3; // zoom: center 40% of pattern
+  vec2 mouse = uMouse * 0.05;
+  vec2 warp = vec2(
+    fbm(zUv * 1.2 + uTime * 0.05 + mouse),
+    fbm(zUv * 1.2 + uTime * 0.05 + 10.0 + mouse * 0.8)
+  );
+  float n = fbm(zUv * 1.5 + warp * 0.6);
+
+  // 5 stops: #0f0f0f → noir → #0f0f0f → noir → #0f0f0f
+  float s = n * 4.0; // 0..4
+  int seg = int(floor(s));
+  float t = fract(s);
+  float brightness;
+  if(seg >= 4) brightness = 0.059;
+  else if(seg == 0) brightness = mix(0.059, 0.0, t);   // #0f0f0f → noir
+  else if(seg == 1) brightness = mix(0.0, 0.059, t);   // noir → #0f0f0f
+  else if(seg == 2) brightness = mix(0.059, 0.0, t);   // #0f0f0f → noir
+  else brightness = mix(0.0, 0.059, t);                 // noir → #0f0f0f
+
+  // Vignette
+  float dist = length(vUv - 0.5);
+  float vignette = 1.0 - smoothstep(0.3, 0.85, dist);
+
+  gl_FragColor = vec4(vec3(brightness * vignette), 1.0);
 }
 </script>
 
@@ -190,7 +289,6 @@ uniform vec2 uResolution;
 uniform float uTime;
 uniform samplerCube uEnvMap;
 uniform vec2 uMouse;
-
 void main() {
   vec3 N = normalize(vWorldNormal);
   vec3 V = normalize(vViewDir);
@@ -329,8 +427,8 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.2;
+renderer.toneMapping = THREE.NoToneMapping;
+renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
 document.body.appendChild(renderer.domElement);
 
 const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
@@ -339,6 +437,21 @@ camera.position.z = 5;
 // --- Scenes: one for background, one for cube ---
 const bgScene = new THREE.Scene();
 const cubeScene = new THREE.Scene();
+
+// --- Click & hold for spherize ---
+let isHolding = false;
+let spherizeProgress = 0;
+let spherizeReleaseTime = 0;
+let spherizeAtRelease = 0;
+const clickPos = { x: 0.5, y: 0.5 };
+window.addEventListener('mousedown', (e) => {
+  if (e.target.tagName !== 'A' && e.target.tagName !== 'IMG') {
+    isHolding = true;
+    clickPos.x = e.clientX / window.innerWidth;
+    clickPos.y = 1.0 - (e.clientY / window.innerHeight);
+  }
+});
+window.addEventListener('mouseup', () => { isHolding = false; });
 
 // --- Mouse ---
 const mouse = { x: 0, y: 0, smoothX: 0, smoothY: 0 };
@@ -359,6 +472,8 @@ const bgUniforms = {
   uMouse: { value: new THREE.Vector2(0, 0) },
   uTrailPos: { value: trailPositions },
   uTrailStrength: { value: trailStrengths },
+  uSpherize: { value: 0 },
+  uCubeScreenPos: { value: new THREE.Vector2(0.5, 0.5) },
 };
 
 const bgMaterial = new THREE.ShaderMaterial({
@@ -371,6 +486,7 @@ const bgMaterial = new THREE.ShaderMaterial({
 const bgPlane = new THREE.Mesh(new THREE.PlaneGeometry(20, 20), bgMaterial);
 bgPlane.position.z = -6;
 bgScene.add(bgPlane);
+
 
 // --- ULTRANOIR text plane ---
 function createTextTexture() {
@@ -395,7 +511,7 @@ const { texture: textTexture, ratio: textRatio } = createTextTexture();
 const textPlaneHeight = 6;
 const textPlane = new THREE.Mesh(
   new THREE.PlaneGeometry(textPlaneHeight * textRatio, textPlaneHeight),
-  new THREE.MeshBasicMaterial({ map: textTexture, transparent: true })
+  new THREE.MeshBasicMaterial({ map: textTexture, transparent: true, toneMapped: false })
 );
 textPlane.position.z = -1.5;
 bgScene.add(textPlane);
@@ -438,34 +554,90 @@ Object.entries(clientImageUrls).forEach(([name, url]) => {
   textureLoader.load(url, (tex) => { clientTextures[name] = tex; });
 });
 
-// Image plane — 16:9, 80% of visible width at z=-2.5
-const imgZ = -2.5;
+// Image plane — 16:9, 64% of visible width at z=-0.5
+const imgZ = -0.5;
 function getImgPlaneSize() {
   const dist = camera.position.z - imgZ;
   const vFov = camera.fov * Math.PI / 180;
   const visH = 2 * Math.tan(vFov / 2) * dist;
   const visW = visH * camera.aspect;
-  const w = visW * 0.8;
+  const w = visW * 0.64;
   const h = w * (9 / 16);
   return { w, h };
 }
 const imgSize = getImgPlaneSize();
-const clientImgMaterial = new THREE.MeshBasicMaterial({
+const clientImgMaterial = new THREE.ShaderMaterial({
   transparent: true,
-  opacity: 0,
-  color: 0xffffff,
   depthWrite: false,
+  uniforms: {
+    uMap: { value: null },
+    uOpacity: { value: 0 },
+    uTime: { value: 0 },
+  },
+  vertexShader: `
+    uniform float uTime;
+    varying vec2 vUv;
+    varying float vShade;
+    void main() {
+      vUv = uv;
+      vec3 pos = position;
+
+      // Cloth waves — subtle fabric in gentle wind
+      float wave1 = sin(pos.x * 3.0 + uTime * 1.2) * 0.03;
+      float wave2 = sin(pos.x * 5.0 - uTime * 0.8 + pos.y * 2.0) * 0.02;
+      float wave3 = sin(pos.y * 4.0 + uTime * 0.6 + pos.x * 1.5) * 0.015;
+      float wave4 = sin(pos.x * 8.0 + pos.y * 6.0 + uTime * 1.5) * 0.008;
+
+      // Displace along Z (depth) for cloth billowing
+      pos.z += wave1 + wave2 + wave3 + wave4;
+
+      // Slight XY movement too — cloth sways
+      pos.x += sin(pos.y * 2.0 + uTime * 0.7) * 0.008;
+      pos.y += sin(pos.x * 1.5 + uTime * 0.5) * 0.006;
+
+      // Compute shading from wave slope (fake lighting on folds)
+      float slope = (wave1 + wave2) * 3.0;
+      vShade = 0.85 + slope * 0.5;
+
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+    }
+  `,
+  fragmentShader: `
+    precision highp float;
+    uniform sampler2D uMap;
+    uniform float uOpacity;
+    varying vec2 vUv;
+    varying float vShade;
+
+    void main() {
+      vec4 tex = texture2D(uMap, vUv);
+      tex.rgb *= clamp(vShade, 0.7, 1.1);
+      tex.a *= uOpacity;
+      gl_FragColor = tex;
+    }
+  `,
+});
+// Proxy for opacity used elsewhere
+Object.defineProperty(clientImgMaterial, 'opacity', {
+  get() { return clientImgMaterial.uniforms.uOpacity.value; },
+  set(v) { clientImgMaterial.uniforms.uOpacity.value = v; }
+});
+Object.defineProperty(clientImgMaterial, 'map', {
+  get() { return clientImgMaterial.uniforms.uMap.value; },
+  set(v) { clientImgMaterial.uniforms.uMap.value = v; }
 });
 const clientImgPlane = new THREE.Mesh(
-  new THREE.PlaneGeometry(imgSize.w, imgSize.h),
+  new THREE.PlaneGeometry(imgSize.w, imgSize.h, 48, 32),
   clientImgMaterial
 );
-clientImgPlane.position.z = imgZ;
+clientImgPlane.position.z = -0.5; // in front of text planes
 bgScene.add(clientImgPlane);
 
 // Hover state
 let clientImgTarget = 0; // target opacity
 const links = document.querySelectorAll('.client-list a');
+const navLogo = document.querySelector('img[alt="UN"]');
+const navBurger = document.querySelector('[style*="flex-direction"]');
 links.forEach(link => {
   link.addEventListener('mouseenter', () => {
     const name = link.textContent.trim();
@@ -507,7 +679,7 @@ const { texture: section2Texture, ratio: section2Ratio } = createSection2Texture
 const section2PlaneHeight = 6;
 const section2Plane = new THREE.Mesh(
   new THREE.PlaneGeometry(section2PlaneHeight * section2Ratio, section2PlaneHeight),
-  new THREE.MeshBasicMaterial({ map: section2Texture, transparent: true })
+  new THREE.MeshBasicMaterial({ map: section2Texture, transparent: true, toneMapped: false })
 );
 section2Plane.position.z = -1.5;
 section2Plane.position.y = -8;
@@ -516,11 +688,50 @@ bgScene.add(section2Plane);
 // --- Virtual scroll ---
 let scrollY = 0;
 let scrollTarget = 0;
-const scrollMax = 8;
+const scrollMax = 50;
+const section3Start = 10; // scroll value where big clients begin
+const clientNames = [
+  'Dior', 'Chanel', 'Louis Vuitton', 'Fred', 'Zadig & Voltaire',
+  'Max Mara', 'CNES', 'Air Liquide', 'Comme des Garçons', 'Charlemagne',
+  'La Cité de la Langue Française', 'Berluti', 'Adidas', 'Van Cleef and Arpels',
+  'Hermès', 'Saint Laurent', 'Gucci', 'Prada', 'Bottega Veneta',
+  'Loewe', 'Celine', 'Balenciaga', 'Fendi', 'Valentino', 'Givenchy', 'Miu Miu'
+];
+// --- Big client name plane (in bgScene, behind cube) ---
+const bigClientCanvas = document.createElement('canvas');
+bigClientCanvas.width = 2048;
+bigClientCanvas.height = 512;
+const bigClientCtx = bigClientCanvas.getContext('2d');
+const bigClientTexture = new THREE.CanvasTexture(bigClientCanvas);
+const bigClientRatio = bigClientCanvas.width / bigClientCanvas.height;
+const bigClientH = 3;
+const bigClientMaterial = new THREE.MeshBasicMaterial({ map: bigClientTexture, transparent: true, opacity: 0, toneMapped: false });
+const bigClientPlane = new THREE.Mesh(
+  new THREE.PlaneGeometry(bigClientH * bigClientRatio, bigClientH),
+  bigClientMaterial
+);
+bigClientPlane.position.z = -0.3; // in front of images (-0.5) but behind cube
+bgScene.add(bigClientPlane);
+
+let currentBigClient = '';
+function updateBigClientTexture(name) {
+  if (name === currentBigClient) return;
+  currentBigClient = name;
+  const ctx = bigClientCtx;
+  ctx.clearRect(0, 0, 2048, 512);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '900 180px "Roboto Condensed", Arial, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.letterSpacing = '-6px';
+  ctx.fillText(name.toUpperCase(), 1024, 256);
+  bigClientTexture.needsUpdate = true;
+}
 window.addEventListener('wheel', (e) => {
   scrollTarget += e.deltaY * 0.005;
   scrollTarget = Math.max(0, Math.min(scrollMax, scrollTarget));
 }, { passive: true });
+
 
 // --- Render target for background pass ---
 const rtWidth = Math.floor(window.innerWidth * Math.min(window.devicePixelRatio, 2));
@@ -530,6 +741,30 @@ let backBuffer = new THREE.WebGLRenderTarget(rtWidth, rtHeight, {
   magFilter: THREE.LinearFilter,
   format: THREE.RGBAFormat
 });
+
+// --- Post-process fullscreen quad ---
+let postRT = new THREE.WebGLRenderTarget(rtWidth, rtHeight, {
+  minFilter: THREE.LinearFilter,
+  magFilter: THREE.LinearFilter,
+  format: THREE.RGBAFormat
+});
+const postUniforms = {
+  uScene: { value: postRT.texture },
+  uStrength: { value: 0 },
+  uCenter: { value: new THREE.Vector2(0.5, 0.5) },
+};
+const postMaterial = new THREE.ShaderMaterial({
+  vertexShader: document.getElementById('post-vertex').textContent,
+  fragmentShader: document.getElementById('post-fragment').textContent,
+  uniforms: postUniforms,
+  depthTest: false,
+  depthWrite: false,
+  toneMapped: false,
+});
+const postQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMaterial);
+const postScene = new THREE.Scene();
+const postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+postScene.add(postQuad);
 
 // --- Environment cubemap for reflections ---
 const cubeRenderTarget = new THREE.WebGLCubeRenderTarget(512, {
@@ -562,6 +797,7 @@ envLights.forEach(({ color, pos, size }) => {
 envScene.background = new THREE.Color(0x050508);
 cubeCamera.update(renderer, envScene);
 
+
 // --- Glass cube with custom shader ---
 const cubeGeo = new RoundedBoxGeometry(1.2, 1.2, 1.2, 2, 0.010);
 const glassUniforms = {
@@ -583,7 +819,6 @@ const glassMaterial = new THREE.ShaderMaterial({
 const cube = new THREE.Mesh(cubeGeo, glassMaterial);
 cubeScene.add(cube);
 
-// No wireframe edges — beveled geometry handles edge highlights naturally
 
 
 // --- Resize ---
@@ -595,6 +830,7 @@ window.addEventListener('resize', () => {
   const w = Math.floor(window.innerWidth * Math.min(window.devicePixelRatio, 2));
   const h = Math.floor(window.innerHeight * Math.min(window.devicePixelRatio, 2));
   backBuffer.setSize(w, h);
+  postRT.setSize(w, h);
   glassUniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
 
   // Resize client image plane
@@ -635,13 +871,72 @@ function animate() {
   textPlane.position.y = scrollY;
   section2Plane.position.y = -8 + scrollY;
 
-  // Client image fade
-  clientImgMaterial.opacity += (clientImgTarget - clientImgMaterial.opacity) * 0.08;
-  clientImgPlane.position.y = scrollY; // follow scroll
+  // Section 3: big client names in center
+  let section3ImgTarget = 0;
+  if (scrollY > section3Start) {
+    const progress = scrollY - section3Start;
+    const clientsPerUnit = 0.75;
+    const activeIdx = Math.floor(progress * clientsPerUnit);
+    const clampedIdx = Math.min(activeIdx, clientNames.length - 1);
+
+    updateBigClientTexture(clientNames[clampedIdx]);
+    bigClientMaterial.opacity += (0.9 - bigClientMaterial.opacity) * 0.08;
+
+    // Show client image behind big name
+    const activeName = clientNames[clampedIdx];
+    const tex = clientTextures[activeName];
+    if (tex) {
+      clientImgMaterial.map = tex;
+      clientImgMaterial.needsUpdate = true;
+      section3ImgTarget = 1;
+    }
+
+    // Sync small client list: scroll up to reveal all names
+    const smallLinks = document.querySelectorAll('.client-list a');
+    const linkH = 22;
+    smallLinks.forEach((link, i) => {
+      if (i === clampedIdx) {
+        link.style.color = '#fff';
+        link.style.opacity = '1';
+      } else {
+        link.style.color = '#666';
+        link.style.opacity = Math.max(0.2, 1 - Math.abs(i - clampedIdx) * 0.15).toString();
+      }
+    });
+    // Scroll the small list up — enough to reveal all names from below viewport
+    const smallList = document.querySelector('.client-list');
+    const totalListH = smallLinks.length * linkH;
+    const viewH = window.innerHeight;
+    const scrollRatio = clampedIdx / (clientNames.length - 1);
+    // Move list from bottom:-280px upward so active name is visible
+    const baseBottom = -280;
+    const maxLift = totalListH + 280 - viewH * 0.3;
+    const liftAmount = scrollRatio * maxLift;
+    smallList.style.bottom = (baseBottom + liftAmount) + 'px';
+  } else {
+    bigClientMaterial.opacity += (0 - bigClientMaterial.opacity) * 0.08;
+    section3ImgTarget = 0;
+    // Reset small list
+    const smallLinks = document.querySelectorAll('.client-list a');
+    smallLinks.forEach(link => { link.style.color = '#fff'; link.style.opacity = '1'; });
+    const smallList = document.querySelector('.client-list');
+    if (smallList) smallList.style.bottom = '-280px';
+  }
+
+
+  // Client image fade — combine hover (from small list) and section3 scroll
+  const combinedImgTarget = Math.max(clientImgTarget, section3ImgTarget);
+  clientImgMaterial.opacity += (combinedImgTarget - clientImgMaterial.opacity) * 0.08;
+  clientImgMaterial.uniforms.uTime.value = t;
+  clientImgPlane.position.y = 0; // always centered on screen
 
   // Background uniforms
   bgUniforms.uTime.value = t;
   bgUniforms.uMouse.value.set(mouse.smoothX, mouse.smoothY);
+  bgUniforms.uSpherize.value = spherizeProgress;
+  const cubeSP = cube.position.clone().project(camera);
+  bgUniforms.uCubeScreenPos.value.set(cubeSP.x * 0.5 + 0.5, cubeSP.y * 0.5 + 0.5);
+
   glassUniforms.uTime.value = t;
   glassUniforms.uMouse.value.set(mouse.smoothX, mouse.smoothY);
 
@@ -673,19 +968,190 @@ function animate() {
     trailStrengths[i] *= 0.96;
   }
 
+  // --- Spherize progress ---
+  const spherizeTarget = isHolding ? 0.3 : 0;
+  if (isHolding) {
+    spherizeProgress += (spherizeTarget - spherizeProgress) * 0.006;
+    spherizeReleaseTime = 0;
+    spherizeAtRelease = 0;
+  } else {
+    if (spherizeAtRelease === 0 && spherizeProgress > 0.001) spherizeAtRelease = spherizeProgress;
+    if (spherizeAtRelease > 0) {
+      spherizeReleaseTime += dt;
+      const dur = 0.7;
+      const t_rel = Math.min(spherizeReleaseTime / dur, 1.0);
+      // Fast return then single soft overshoot
+      // Fast return then visible inverse bounce
+      let val;
+      if (t_rel < 0.5) {
+        // Return to 0 in first half
+        const t = t_rel / 0.5;
+        val = (1.0 - t * t);
+      } else {
+        // Bounce: go negative (inverse spherize) then back to 0
+        const t = (t_rel - 0.5) / 0.5;
+        val = -0.12 * Math.sin(t * Math.PI); // -12% overshoot, single arc
+      }
+      spherizeProgress = spherizeAtRelease * val;
+      if (t_rel >= 1.0) { spherizeProgress = 0; spherizeAtRelease = 0; }
+    }
+  }
+
+  // --- Parallax on hold ---
+  const parallaxAmount = spherizeProgress / 0.6; // 0..1
+
+  // 3D text planes — strongest parallax
+  const pxText = mouse.smoothX * 0.2 * parallaxAmount;
+  const pyText = mouse.smoothY * 0.15 * parallaxAmount;
+  textPlane.position.x = pxText;
+  section2Plane.position.x = pxText;
+  bigClientPlane.position.x = pxText;
+
+  // HTML elements — different layers for depth
+  // Content layer (clients, scroll) — medium parallax
+  const contentPx = mouse.smoothX * 20 * parallaxAmount;
+  const contentPy = -mouse.smoothY * 15 * parallaxAmount;
+  const clientList = document.querySelector('.client-list');
+  const scrollExplore = document.querySelector('[style*="Spectral"]');
+  if (clientList) clientList.style.transform = `translate(${contentPx}px, ${contentPy}px)`;
+  if (scrollExplore) {
+    scrollExplore.dataset.px = contentPx;
+    scrollExplore.dataset.py = contentPy;
+    const sm = magOffsets.scroll || {x:0,y:0};
+    scrollExplore.style.transform = `translateX(-50%) translate(${contentPx + sm.x}px, ${contentPy + sm.y}px)`;
+  }
+
+  // Nav layer (logo, burger) — subtle parallax
+  const navPx = mouse.smoothX * 5 * parallaxAmount;
+  const navPy = -mouse.smoothY * 4 * parallaxAmount;
+  if (navLogo) navLogo.style.transform = `translate(${navPx + magOffsets.logo.x}px, ${navPy + magOffsets.logo.y}px)`;
+  if (navBurger) navBurger.style.transform = `translate(${navPx + magOffsets.burger.x}px, ${navPy + magOffsets.burger.y}px)`;
+
   // --- Rendering ---
+  // 1. Background to backBuffer (for glass refraction)
   renderer.setRenderTarget(backBuffer);
   renderer.render(bgScene, camera);
 
-  renderer.setRenderTarget(null);
-  renderer.render(bgScene, camera);
+  if (Math.abs(spherizeProgress) > 0.001) {
+    // 2. Render full scene to postRT
+    renderer.setRenderTarget(postRT);
+    renderer.clear();
+    renderer.render(bgScene, camera);
+    renderer.autoClear = false;
+    renderer.render(cubeScene, camera);
+    renderer.autoClear = true;
 
-  renderer.autoClear = false;
-  renderer.render(cubeScene, camera);
-  renderer.autoClear = true;
+    // 3. Post-process to screen — center on cube
+    const cubeScreenPos = cube.position.clone().project(camera);
+    const cx = cubeScreenPos.x * 0.5 + 0.5;
+    const cy = cubeScreenPos.y * 0.5 + 0.5;
+    postUniforms.uStrength.value = spherizeProgress;
+    postUniforms.uCenter.value.set(cx, cy);
+    renderer.setRenderTarget(null);
+    renderer.render(postScene, postCamera);
+  } else {
+    // No distortion: render directly
+    renderer.setRenderTarget(null);
+    renderer.render(bgScene, camera);
+    renderer.autoClear = false;
+    renderer.render(cubeScene, camera);
+    renderer.autoClear = true;
+  }
 }
 
 animate();
+</script>
+<script>
+// Custom cursor
+const cursorDot = document.querySelector('.cursor-dot');
+const cursorRing = document.querySelector('.cursor-ring');
+let cursorX = window.innerWidth / 2, cursorY = window.innerHeight / 2;
+let ringX = cursorX, ringY = cursorY;
+
+document.addEventListener('mousemove', e => {
+  cursorX = e.clientX;
+  cursorY = e.clientY;
+});
+
+// Hover detection on interactive elements
+document.addEventListener('mouseover', e => {
+  if (e.target.closest('a, .client-link, [data-hover]')) {
+    cursorDot.classList.add('hover');
+    cursorRing.classList.add('hover');
+  }
+});
+document.addEventListener('mouseout', e => {
+  if (e.target.closest('a, .client-link, [data-hover]')) {
+    cursorDot.classList.remove('hover');
+    cursorRing.classList.remove('hover');
+  }
+});
+
+// Hold state
+document.addEventListener('mousedown', () => {
+  cursorDot.classList.add('holding');
+  cursorRing.classList.add('holding');
+});
+document.addEventListener('mouseup', () => {
+  cursorDot.classList.remove('holding');
+  cursorRing.classList.remove('holding');
+});
+
+// Magnetic offsets — shared with animate() loop
+const magOffsets = { logo: {x:0,y:0}, burger: {x:0,y:0}, clients: {} };
+
+function animateCursor() {
+  requestAnimationFrame(animateCursor);
+  cursorDot.style.left = cursorX + 'px';
+  cursorDot.style.top = cursorY + 'px';
+  ringX += (cursorX - ringX) * 0.12;
+  ringY += (cursorY - ringY) * 0.12;
+  cursorRing.style.left = ringX + 'px';
+  cursorRing.style.top = ringY + 'px';
+
+  // Magnetic pull helper
+  function calcMag(el, strength, radius, offset) {
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const dx = cursorX - cx;
+    const dy = cursorY - cy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    let tx = 0, ty = 0;
+    if (dist < radius) {
+      const pull = (1 - dist / radius) * strength;
+      tx = dx * pull;
+      ty = dy * pull;
+    }
+    offset.x += (tx - offset.x) * 0.1;
+    offset.y += (ty - offset.y) * 0.1;
+  }
+
+  // Logo & burger
+  const logo = document.querySelector('img[alt="UN"]');
+  const burger = document.querySelector('[style*="flex-direction"]');
+  calcMag(logo, 0.35, 150, magOffsets.logo);
+  calcMag(burger, 0.35, 150, magOffsets.burger);
+
+  // Scroll to explore
+  const scrollEl = document.querySelector('[style*="Spectral"]');
+  if (!magOffsets.scroll) magOffsets.scroll = {x:0,y:0};
+  calcMag(scrollEl, 0.3, 120, magOffsets.scroll);
+  if (scrollEl) {
+    const contentPx2 = parseFloat(scrollEl.dataset.px || 0);
+    const contentPy2 = parseFloat(scrollEl.dataset.py || 0);
+    scrollEl.style.transform = `translateX(-50%) translate(${contentPx2 + magOffsets.scroll.x}px, ${contentPy2 + magOffsets.scroll.y}px)`;
+  }
+
+  // Client links
+  document.querySelectorAll('.client-link').forEach((el, i) => {
+    if (!magOffsets.clients[i]) magOffsets.clients[i] = {x:0,y:0};
+    calcMag(el, 0.25, 120, magOffsets.clients[i]);
+    el.style.transform = `translate(${magOffsets.clients[i].x}px, ${magOffsets.clients[i].y}px)`;
+  });
+}
+animateCursor();
 </script>
 </body>
 </html>
